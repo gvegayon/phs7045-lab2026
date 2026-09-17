@@ -64,3 +64,75 @@ microbenchmark::microbenchmark(
 ```
 
 Notice this could be even faster if we skip the `matrix` step and instead use two calls to `runif()`--the matrix step has to allocate memory again.
+
+## Problem 2
+
+```{r}
+#| label: make_kernel
+#| cache: true
+make_kernel <- function(coords, bandwidth) {
+  d <- as.matrix(dist(coords))
+  K <- exp(-(d / bandwidth)^2)
+  K / rowSums(K)
+}
+
+simulate_spread <- function(coords, p0, nsteps = 300, bandwidth = 0.15) {
+  p <- p0
+  for (s in seq_len(nsteps)) {
+    K <- make_kernel(coords, bandwidth)
+    p <- as.vector(p %*% K)
+    p <- p / sum(p)
+  }
+  p
+}
+
+set.seed(2)
+k <- 1000
+coords <- cbind(runif(k), runif(k))
+p0 <- rep(1 / k, k)
+
+p_final <- simulate_spread(coords, p0)
+summary(p_final)
+```
+
+Let's create a plot to visualize the spatial distribution of the final probabilities.
+
+```{r}
+#| label: plot_spread
+library(ggplot2)
+df <- data.frame(x = coords[, 1], y = coords[, 2], p = p_final)
+ggplot(df, aes(x = x, y = y, color = p)) +
+  geom_point() +
+  scale_color_viridis_c() +
+  theme_minimal() +
+  labs(title = "Final Probability Distribution", color = "Probability")
+```
+
+Inspecting the profiling of the model, we can see that the bottleneck is in the `make_kernel()` function. Since the kernel does not require update, we can safely move it outside the loop:
+
+```{r}
+#| label: profvis_spread
+#| cache: true
+make_kernel <- function(coords, bandwidth) {
+  d <- as.matrix(dist(coords))
+  K <- exp(-(d / bandwidth)^2)
+  K / rowSums(K)
+}
+
+simulate_spread2 <- function(coords, p0, nsteps = 300, bandwidth = 0.15) {
+  p <- p0
+  K <- make_kernel(coords, bandwidth) # Moving the kernel outside
+  for (s in seq_len(nsteps)) {
+    p <- as.vector(p %*% K)
+    p <- p / sum(p)
+  }
+  p
+}
+
+microbenchmark::microbenchmark(
+  simulate_spread(coords, p0, nsteps = 50),
+  simulate_spread2(coords, p0, nsteps = 50),
+  unit = "relative",
+  times = 10
+)
+```
