@@ -64,9 +64,12 @@ microbenchmark::microbenchmark(
     integer overflows
 
     Unit: relative
-                    expr      min       lq    mean   median       uq      max neval
-      simulate_pi(10000) 67.85646 56.96139 50.5057 55.71564 54.19037 8.257476   100
-     simulate_pi2(10000)  1.00000  1.00000  1.0000  1.00000  1.00000 1.000000   100
+                    expr      min       lq     mean   median       uq      max
+      simulate_pi(10000) 62.90384 54.29334 48.75052 53.68655 51.47905 8.052465
+     simulate_pi2(10000)  1.00000  1.00000  1.00000  1.00000  1.00000 1.000000
+     neval
+       100
+       100
 
 Notice this could be even faster if we skip the `matrix` step and
 instead use two calls to `runif()`–the matrix step has to allocate
@@ -159,3 +162,100 @@ microbenchmark::microbenchmark(
            uq      max neval
      19.62095 11.71628    10
       1.00000  1.00000    10
+
+# Part 2
+
+``` r
+# Fit a Poisson regression (log link) by Newton-Raphson on the
+# log-likelihood. See the lab for the score, Hessian, and the update
+# equation this function is supposed to implement.
+
+fit_poisson_nr <- function(X, y, maxit = 50, tol = 1e-8) {
+  beta <- rep(0, ncol(X))
+  beta[1] <- log(mean(y))
+
+  for (it in 1:maxit) {
+    mu <- exp(drop(X %*% beta))
+    score <- crossprod(X, y - mu)
+    info <- crossprod(X * mu, X)
+
+    # Wrapping solve (which is when it fails)
+    # in try catch so we can inspect it right there
+    step <- tryCatch({
+        solve(info, score)
+    }, error = \(e) e)
+
+    if (inherits(step, "error")) {
+      browser() # Investigate the error in solve
+      stop("There's a problem.")
+    }
+
+    beta <- beta - drop(step)
+
+    if (max(abs(step)) < tol) break
+  }
+
+  list(coefficients = beta, iterations = it)
+}
+
+set.seed(331)
+n <- 500
+x1 <- rnorm(n, 50, 10)
+x2 <- rbinom(n, 1, 0.4)
+X <- cbind(1, x1, x2)
+y <- rpois(n, exp(drop(X %*% c(-2, 0.05, 0.8))))
+
+fit_poisson_nr(X, y)
+```
+
+This was a hard problem to identify. The issue was that we had the wrong
+sign in the update step. Since we are using the information matrix, we
+need to add it to beta, not substract it
+
+``` r
+fit_poisson_nr_corrected <- function(X, y, maxit = 50, tol = 1e-8) {
+  beta <- rep(0, ncol(X))
+  beta[1] <- log(mean(y))
+
+  for (it in 1:maxit) {
+    mu <- exp(drop(X %*% beta))
+    score <- crossprod(X, y - mu)
+    info <- crossprod(X * mu, X)
+
+    # Wrapping solve (which is when it fails)
+    # in try catch so we can inspect it right there
+    step <- tryCatch({
+        solve(info, score)
+    }, error = \(e) e)
+
+    if (inherits(step, "error")) {
+      browser() # Investigate the error in solve
+      stop("There's a problem.")
+    }
+
+    # HERE WAS THE ISSUE
+    # beta <- beta - drop(step)
+    beta <- beta + drop(step)
+
+    if (max(abs(step)) < tol) break
+  }
+
+  list(coefficients = beta, iterations = it)
+}
+
+set.seed(331)
+n <- 500
+x1 <- rnorm(n, 50, 10)
+x2 <- rbinom(n, 1, 0.4)
+X <- cbind(1, x1, x2)
+y <- rpois(n, exp(drop(X %*% c(-2, 0.05, 0.8))))
+
+fit_poisson_nr_corrected(X, y)
+```
+
+    $coefficients
+                         x1          x2 
+    -2.02735981  0.05080667  0.78566674 
+
+    $iterations
+    [1] 6
