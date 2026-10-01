@@ -1,0 +1,55 @@
+---
+title: Solutions for lab 6
+date: 2026-10-01
+author: George G Vega Yon
+format: gfm
+---
+
+```{r}
+ps_matchR <- function(x) {
+  
+  match_expected <- as.matrix(dist(x))
+  diag(match_expected) <- .Machine$integer.max
+  indices <- apply(match_expected, 1, which.min)
+  
+  list(
+    match_id = as.integer(unname(indices)),
+    match_x  = x[indices]
+  )
+  
+}
+```
+
+Testing the function out
+
+
+```{r}
+set.seed(33)
+x <- runif(5)
+ps_matchR(x)
+```
+
+
+```{R}
+Rcpp::sourceCpp("lab6.cpp")
+ps_match1(x)
+```
+
+Verifying we get the same value
+
+```{R}
+identical(ps_matchR(x), ps_match1(x))
+```
+
+Now compare
+
+
+```{R}
+x <- runif(1000)
+microbenchmark::microbenchmark(
+  R = ps_matchR(x),
+  Cpp = ps_match1(x),
+  unit = "relative"
+)
+```
+
