@@ -52,10 +52,10 @@ bench::mark(serial=serial_sum(x),parallel=parallel_sum(x),relative=TRUE)
 ```
 
     # A tibble: 2 × 6
-      expression      min   median `itr/sec` mem_alloc `gc/sec`
-      <bch:expr>    <dbl>    <dbl>     <dbl>     <dbl>    <dbl>
-    1 serial           1        1    841620.       NaN      NaN
-    2 parallel   1356830. 1058456.        1        Inf      NaN
+      expression      min  median `itr/sec` mem_alloc `gc/sec`
+      <bch:expr>    <dbl>   <dbl>     <dbl>     <dbl>    <dbl>
+    1 serial           1       1    523288.       NaN      NaN
+    2 parallel   1057236. 767964.        1        Inf      NaN
 
 Just for completeness, we are doing a different approach to
 parallelization: passing the indices to the parallel function instead of
@@ -94,9 +94,9 @@ bench::mark(
     # A tibble: 3 × 6
       expression      min  median `itr/sec` mem_alloc `gc/sec`
       <bch:expr>    <dbl>   <dbl>     <dbl>     <dbl>    <dbl>
-    1 serial           1       1  776076.         NaN      NaN
-    2 parallel   1028926. 850645.      1          Inf      NaN
-    3 parallel2  1053431. 833828.      1.02       Inf      NaN
+    1 serial           1       1  839044.         NaN      NaN
+    2 parallel   1129626. 978763.      1          Inf      NaN
+    3 parallel2  1022140. 861615.      1.14       Inf      NaN
 
 Since we added the overhead of exporting the variable to the cluster,
 the second parallelization is even slower than the first one.
@@ -116,6 +116,8 @@ sim_one <- function(n, seed, beta = c(0, 0.5, 1), alpha = 0.05) {
   x <- rnorm(n)
   d <- rep(c(0, 1), each = n/2)
   y <- rbinom(n, 1, prob = pnorm(beta[1] + beta[2] * x + beta[3] * d))
+  # We would have done also:
+  # y <- as.integer(runif(n) < pnorm(beta[1] + beta[2] * x + beta[3] * d))
 
   # Fit the probit model and extract the z-value for d
   summ_table <- glm(y ~ x + d, family = binomial(link = "probit")) |>
@@ -142,10 +144,77 @@ ans_serial <- lapply(seq_len(nrow(grid)), function(i) {
   sim_one(grid$n[i], grid$seed[i])
 })
 
+tapply(unlist(ans_serial), grid$n, mean)
+```
+
+      100   200   300   400   500   600   700   800   900  1000 
+    0.950 0.998 1.000 1.000 1.000 1.000 1.000 1.000 1.000 1.000 
+
+``` r
 # 4. Run the simulation in parallel (create the cluster, export what
 #    the workers need, run parLapply, stop the cluster)
+cl <- parallel::makeCluster(5)
+parallel::clusterExport(cl, c("sim_one", "grid"))
+ans_parallel <- parallel::parLapply(
+  cl, seq_len(nrow(grid)), function(i) {
+    sim_one(grid$n[i], grid$seed[i])
+  }
+)
+parallel::stopCluster(cl)
 
 # 5. Check that both are the same and compute the power by sample size
 identical(ans_serial, ans_parallel)
+```
+
+    [1] TRUE
+
+``` r
 tapply(unlist(ans_parallel), grid$n, mean)
 ```
+
+      100   200   300   400   500   600   700   800   900  1000 
+    0.950 0.998 1.000 1.000 1.000 1.000 1.000 1.000 1.000 1.000 
+
+We can see that the parallel execution yields the same result.
+Nonetheless, to properly measure it, we want to wrap it as a function
+and benchmark it:
+
+``` r
+seq_sim <- function() {
+  lapply(seq_len(nrow(grid)), function(i) {
+    sim_one(grid$n[i], grid$seed[i])
+  })
+}
+
+par_sim <- function() {
+  cl <- parallel::makeCluster(5)
+
+  # This line tells R that when the function exits, it
+  # should stop the cluster. This is important to avoid
+  # leaving open clusters if an error occurs.
+  on.exit(parallel::stopCluster(cl))
+
+  parallel::clusterExport(cl, c("sim_one", "grid"))
+  
+  parallel::parLapply(
+    cl, seq_len(nrow(grid)), function(i) {
+      sim_one(grid$n[i], grid$seed[i])
+    }
+  )
+}
+
+microbenchmark::microbenchmark(
+  serial = seq_sim(),
+  parallel = par_sim(),
+  unit = "relative", times = 1
+)
+```
+
+    Warning in microbenchmark::microbenchmark(serial = seq_sim(), parallel =
+    par_sim(), : less accurate nanosecond times to avoid potential integer
+    overflows
+
+    Unit: relative
+         expr     min      lq    mean  median      uq     max neval
+       serial 2.42692 2.42692 2.42692 2.42692 2.42692 2.42692     1
+     parallel 1.00000 1.00000 1.00000 1.00000 1.00000 1.00000     1

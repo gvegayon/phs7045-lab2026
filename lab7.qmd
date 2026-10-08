@@ -101,6 +101,8 @@ sim_one <- function(n, seed, beta = c(0, 0.5, 1), alpha = 0.05) {
   x <- rnorm(n)
   d <- rep(c(0, 1), each = n/2)
   y <- rbinom(n, 1, prob = pnorm(beta[1] + beta[2] * x + beta[3] * d))
+  # We would have done also:
+  # y <- as.integer(runif(n) < pnorm(beta[1] + beta[2] * x + beta[3] * d))
 
   # Fit the probit model and extract the z-value for d
   summ_table <- glm(y ~ x + d, family = binomial(link = "probit")) |>
@@ -114,7 +116,6 @@ sim_one <- function(n, seed, beta = c(0, 0.5, 1), alpha = 0.05) {
 ```
 
 ```{r}
-#| eval: false
 # 2. The simulation grid: one row per (sample size, replicate), with its
 #    own seed drawn ONCE in the main session
 set.seed(7045)
@@ -128,10 +129,54 @@ ans_serial <- lapply(seq_len(nrow(grid)), function(i) {
   sim_one(grid$n[i], grid$seed[i])
 })
 
+tapply(unlist(ans_serial), grid$n, mean)
+
 # 4. Run the simulation in parallel (create the cluster, export what
 #    the workers need, run parLapply, stop the cluster)
+cl <- parallel::makeCluster(5)
+parallel::clusterExport(cl, c("sim_one", "grid"))
+ans_parallel <- parallel::parLapply(
+  cl, seq_len(nrow(grid)), function(i) {
+    sim_one(grid$n[i], grid$seed[i])
+  }
+)
+parallel::stopCluster(cl)
 
 # 5. Check that both are the same and compute the power by sample size
 identical(ans_serial, ans_parallel)
 tapply(unlist(ans_parallel), grid$n, mean)
 ```
+
+We can see that the parallel execution yields the same result. Nonetheless, to properly measure it, we want to wrap it as a function and benchmark it:
+
+```{r}
+seq_sim <- function() {
+  lapply(seq_len(nrow(grid)), function(i) {
+    sim_one(grid$n[i], grid$seed[i])
+  })
+}
+
+par_sim <- function() {
+  cl <- parallel::makeCluster(5)
+
+  # This line tells R that when the function exits, it
+  # should stop the cluster. This is important to avoid
+  # leaving open clusters if an error occurs.
+  on.exit(parallel::stopCluster(cl))
+
+  parallel::clusterExport(cl, c("sim_one", "grid"))
+  
+  parallel::parLapply(
+    cl, seq_len(nrow(grid)), function(i) {
+      sim_one(grid$n[i], grid$seed[i])
+    }
+  )
+}
+
+microbenchmark::microbenchmark(
+  serial = seq_sim(),
+  parallel = par_sim(),
+  unit = "relative", times = 1
+)
+```
+
