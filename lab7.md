@@ -1,0 +1,151 @@
+# Solutions for lab 7
+George G Vega Yon
+2026-10-08
+
+## Question 1: Overhead cost
+
+``` r
+set.seed(123)
+x <- runif(n=100)
+
+serial_sum <- function(x){
+  x_sum <- sum(x)
+  return(x_sum)
+}
+```
+
+``` r
+library(parallel)
+set.seed(123)
+x <- runif(n=100)
+
+parallel_sum <- function(x, n_cores = 4) {
+  
+  # Set number of cores to use
+  cl <- parallel::makePSOCKcluster(n_cores)
+
+  # Split the data into chunks for each core
+  indices <- parallel::splitIndices(length(x), n_cores)
+  x_split <- lapply(indices, \(i) x[i])
+  
+  # Calculate partial sums doing something like:
+  partial_sums <- parallel::parSapply(cl, x_split, sum)
+  
+  # Stop the cluster
+  parallel::stopCluster(cl)
+  
+  # Add and return the partial sums
+  sum(partial_sums)
+  
+}
+```
+
+Since summing a “small” number of vectors in R is very fast, the
+overhead cost of parallelizing the work increases the compute time
+significantly; this is why parallelizing everything is not a good
+solution. Now, this type of problems (in which you have to split the
+data yourself) are not rare, so just knowing how to do this is useful.
+Here is the benchmark of the two functions:
+
+``` r
+bench::mark(serial=serial_sum(x),parallel=parallel_sum(x),relative=TRUE)
+```
+
+    # A tibble: 2 × 6
+      expression      min   median `itr/sec` mem_alloc `gc/sec`
+      <bch:expr>    <dbl>    <dbl>     <dbl>     <dbl>    <dbl>
+    1 serial           1        1    841620.       NaN      NaN
+    2 parallel   1356830. 1058456.        1        Inf      NaN
+
+Just for completeness, we are doing a different approach to
+parallelization: passing the indices to the parallel function instead of
+splitting the data before.
+
+``` r
+parallel_sum2 <- function(x, n_cores = 4) {
+  
+  # Set number of cores to use
+  cl <- parallel::makePSOCKcluster(n_cores)
+
+  # make cluster and export to the cluster the x variable
+  # Use "split function to divide x up into as many chunks as the number of cores
+  indices <- parallel::splitIndices(length(x), n_cores)
+  parallel::clusterExport(cl, "x")
+  
+  # Calculate partial sums doing something like:
+  partial_sums <- parallel::parSapply(cl, indices, \(i) sum(x[i]))
+  
+  # Stop the cluster
+  parallel::stopCluster(cl)
+  
+  # Add and return the partial sums
+  sum(partial_sums)
+  
+}
+
+bench::mark(
+  serial=serial_sum(x),
+  parallel=parallel_sum(x),
+  parallel2=parallel_sum2(x),
+  relative=TRUE
+  )
+```
+
+    # A tibble: 3 × 6
+      expression      min  median `itr/sec` mem_alloc `gc/sec`
+      <bch:expr>    <dbl>   <dbl>     <dbl>     <dbl>    <dbl>
+    1 serial           1       1  776076.         NaN      NaN
+    2 parallel   1028926. 850645.      1          Inf      NaN
+    3 parallel2  1053431. 833828.      1.02       Inf      NaN
+
+Since we added the overhead of exporting the variable to the cluster,
+the second parallelization is even slower than the first one.
+
+## Question 2: Power calculation
+
+``` r
+library(parallel)
+
+# 1. A function that simulates ONE dataset of size n using a given seed,
+#    fits the probit model, and returns TRUE if H0 is rejected
+sim_one <- function(n, seed, beta = c(0, 0.5, 1), alpha = 0.05) {
+
+  set.seed(seed)
+
+  # Simulate x, d (exactly n/2 treated), and y
+  x <- rnorm(n)
+  d <- rep(c(0, 1), each = n/2)
+  y <- rbinom(n, 1, prob = pnorm(beta[1] + beta[2] * x + beta[3] * d))
+
+  # Fit the probit model and extract the z-value for d
+  summ_table <- glm(y ~ x + d, family = binomial(link = "probit")) |>
+    summary() |>
+    coef()
+  
+  # Return TRUE/FALSE
+  summ_table["d", "Pr(>|z|)"] < alpha
+
+}
+```
+
+``` r
+# 2. The simulation grid: one row per (sample size, replicate), with its
+#    own seed drawn ONCE in the main session
+set.seed(7045)
+sizes <- seq(100, 1000, by = 100)
+nsim  <- 500
+grid  <- expand.grid(rep = 1:nsim, n = sizes)
+grid$seed <- sample.int(.Machine$integer.max, nrow(grid))
+
+# 3. Run the simulation in serial
+ans_serial <- lapply(seq_len(nrow(grid)), function(i) {
+  sim_one(grid$n[i], grid$seed[i])
+})
+
+# 4. Run the simulation in parallel (create the cluster, export what
+#    the workers need, run parLapply, stop the cluster)
+
+# 5. Check that both are the same and compute the power by sample size
+identical(ans_serial, ans_parallel)
+tapply(unlist(ans_parallel), grid$n, mean)
+```
